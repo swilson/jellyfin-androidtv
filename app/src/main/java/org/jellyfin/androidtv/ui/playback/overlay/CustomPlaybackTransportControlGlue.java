@@ -2,7 +2,9 @@ package org.jellyfin.androidtv.ui.playback.overlay;
 
 import static java.lang.Math.round;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.os.Handler;
 import android.view.KeyEvent;
 import android.view.View;
@@ -12,12 +14,15 @@ import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import androidx.leanback.media.PlaybackGlueHost;
 import androidx.leanback.media.PlaybackTransportControlGlue;
 import androidx.leanback.widget.AbstractDetailsDescriptionPresenter;
 import androidx.leanback.widget.Action;
 import androidx.leanback.widget.ArrayObjectAdapter;
 import androidx.leanback.widget.PlaybackControlsRow;
 import androidx.leanback.widget.PlaybackRowPresenter;
+import androidx.leanback.widget.PlaybackSeekDataProvider;
+import androidx.leanback.widget.PlaybackSeekUi;
 import androidx.leanback.widget.PlaybackTransportRowPresenter;
 import androidx.leanback.widget.PlaybackTransportRowView;
 import androidx.leanback.widget.RowPresenter;
@@ -84,8 +89,12 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
 
     private LinearLayout mButtonRef;
 
+    private Context mContext;
+
+
     CustomPlaybackTransportControlGlue(Context context, VideoPlayerAdapter playerAdapter, PlaybackController playbackController) {
         super(context, playerAdapter);
+        mContext = context;
         this.playbackController = playbackController;
 
         mRefreshEndTime = () -> {
@@ -103,6 +112,14 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
         };
 
         initActions(context);
+    }
+
+    @Override
+    protected  void onAttachedToHost(PlaybackGlueHost host) {
+        super.onAttachedToHost(host);
+        if (host instanceof PlaybackSeekUi) {
+            ((PlaybackSeekUi) host).setPlaybackSeekUiClient(mPlaybackSeekUiClient);
+        }
     }
 
     @Override
@@ -380,5 +397,94 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
             selectAudioAction.handleClickAction(playbackController, getPlayerAdapter(), getContext(), v);
         }
         return super.onKey(v, keyCode, event);
+    }
+
+    final SeekUiClient mPlaybackSeekUiClient = new SeekUiClient();
+    class SeekUiClient extends PlaybackSeekUi.Client {
+        boolean mPausedBeforeSeek;
+        long mPositionBeforeSeek;
+        long mLastUserPosition;
+        boolean mIsSeek;
+        private final int SEEK_EXECUTION_DELAY_MS = 1000;
+        private Runnable seekRunnable = new Runnable() {
+            @Override
+            public void run() {
+                KeyEvent cancelSeek = new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER);
+                if (mContext instanceof Activity) {
+                    Activity activity = (Activity) mContext;
+                    activity.dispatchKeyEvent(cancelSeek);
+                } else if (mContext instanceof ContextWrapper) {
+                    ContextWrapper contextWrapper = (ContextWrapper) mContext;
+                    if (contextWrapper.getBaseContext() instanceof Activity) {
+                        Activity activity = (Activity) contextWrapper.getBaseContext();
+                        activity.dispatchKeyEvent(cancelSeek);
+                    }
+                }
+            }
+        };
+
+        @Override
+        public PlaybackSeekDataProvider getPlaybackSeekDataProvider() {
+            return getSeekProvider();
+        }
+
+        @Override
+        public boolean isSeekEnabled() {
+            return getSeekProvider() != null || isSeekEnabled();
+        }
+        @Override
+        public void onSeekStarted() {
+            mIsSeek = true;
+            mPausedBeforeSeek = !isPlaying();
+            getPlayerAdapter().setProgressUpdatingEnabled(true);
+            // if we seek thumbnails, we don't need save original position because current
+            // position is not changed during seeking.
+            // otherwise we will call seekTo() and may need to restore the original position.
+            mPositionBeforeSeek = getSeekProvider() == null ? getPlayerAdapter().getCurrentPosition() : -1;
+            mLastUserPosition = -1;
+            pause();
+
+        }
+
+        @Override
+        public void onSeekPositionChanged(long pos) {
+            if (getSeekProvider() == null) {
+                getPlayerAdapter().seekTo(pos);
+            } else {
+                mLastUserPosition = pos;
+            }
+            // update to the progress bar
+            if (getControlsRow() != null) {
+                getControlsRow().setCurrentPosition(pos);
+            }
+
+            if (getSeekProvider() != null) {
+                mHandler.removeCallbacks(seekRunnable);
+                mHandler.postDelayed(seekRunnable, SEEK_EXECUTION_DELAY_MS);
+            }
+        }
+
+        @Override
+        public void onSeekFinished(boolean cancelled) {
+            mHandler.removeCallbacks(seekRunnable, SEEK_EXECUTION_DELAY_MS);
+
+            if (!cancelled) {
+                if (mLastUserPosition >= 0) {
+                    seekTo(mLastUserPosition);
+                }
+            } else {
+                if (mPositionBeforeSeek >= 0) {
+                    seekTo(mPositionBeforeSeek);
+                }
+            }
+            mIsSeek = false;
+            if (!mPausedBeforeSeek) {
+                play();
+            } else {
+                getPlayerAdapter().setProgressUpdatingEnabled(false);
+                // we neeed update UI since PlaybackControlRow still saves previous position.
+                onUpdateProgress();
+            }
+        }
     }
 }
