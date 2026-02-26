@@ -31,7 +31,7 @@ import org.jellyfin.androidtv.ui.browsing.EnhancedBrowseFragment;
 import org.jellyfin.androidtv.ui.presentation.MutableObjectAdapter;
 import org.jellyfin.androidtv.ui.presentation.TextItemPresenter;
 import org.jellyfin.androidtv.util.Utils;
-import org.jellyfin.androidtv.util.apiclient.EmptyLifecycleAwareResponse;
+import org.jellyfin.androidtv.util.apiclient.EmptyResponse;
 import org.jellyfin.sdk.model.api.BaseItemDto;
 import org.jellyfin.sdk.model.api.BaseItemPerson;
 import org.jellyfin.sdk.model.api.ItemSortBy;
@@ -78,7 +78,7 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
     private SortOrder sortOrder;
     private FilterOptions mFilters;
 
-    private EmptyLifecycleAwareResponse mRetrieveFinishedListener;
+    private EmptyResponse mRetrieveFinishedListener;
 
     private ChangeTriggerType[] reRetrieveTriggers = new ChangeTriggerType[]{};
     private Instant lastFullRetrieve;
@@ -468,18 +468,18 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
             return;
         }
         if (isCurrentlyRetrieving()) {
-            Timber.d("Not loading more because currently retrieving");
+            Timber.i("Not loading more because currently retrieving");
             return;
         }
         // This needs tobe based on the actual estimated cards on screen via type of presenter and WindowAlignmentOffsetPercent
         if (chunkSize > 0) {
             // we can use chunkSize as indicator on when to load
             if (pos >= (itemsLoaded - (chunkSize / 1.7))) {
-                Timber.d("Loading more items trigger pos <%s> itemsLoaded <%s> from total <%s> with chunkSize <%s>", pos, itemsLoaded, totalItems, chunkSize);
+                Timber.i("Loading more items trigger pos <%s> itemsLoaded <%s> from total <%s> with chunkSize <%s>", pos, itemsLoaded, totalItems, chunkSize);
                 retrieveNext();
             }
         } else if (pos >= itemsLoaded - 20) {
-            Timber.d("Loading more items trigger pos <%s> itemsLoaded <%s> from total <%s>", pos, itemsLoaded, totalItems);
+            Timber.i("Loading more items trigger pos <%s> itemsLoaded <%s> from total <%s>", pos, itemsLoaded, totalItems);
             retrieveNext();
         }
     }
@@ -609,9 +609,6 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
             case StaticItems:
                 loadStaticItems();
                 break;
-            case StaticAudioQueueItems:
-                loadStaticAudioItems();
-                break;
             case Specials:
                 ItemRowAdapterHelperKt.retrieveSpecialFeatures(this, api.getValue(), mSpecialsQuery);
                 break;
@@ -643,7 +640,7 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
                 break;
             case Resume:
                 ItemRowAdapterHelperKt.retrieveResumeItems(this, api.getValue(), resumeQuery);
-            break;
+                break;
         }
     }
 
@@ -686,20 +683,6 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
         notifyRetrieveFinished();
     }
 
-    private void loadStaticAudioItems() {
-        if (mItems != null) {
-            for (org.jellyfin.sdk.model.api.BaseItemDto item : mItems) {
-                add(new AudioQueueBaseRowItem(item));
-            }
-            itemsLoaded = mItems.size();
-
-        } else {
-            removeRow();
-        }
-
-        notifyRetrieveFinished();
-    }
-
     private void addToParentIfResultsReceived() {
         if (itemsLoaded > 0 && mParent != null) {
             mParent.add(mRow);
@@ -719,14 +702,16 @@ public class ItemRowAdapter extends MutableObjectAdapter<Object> {
     }
 
     protected void notifyRetrieveFinished(@Nullable Exception exception) {
+        if (exception != null) Timber.w(exception, "Failed to retrieve items");
+
         setCurrentlyRetrieving(false);
-        if (mRetrieveFinishedListener != null && mRetrieveFinishedListener.getActive()) {
+        if (mRetrieveFinishedListener != null) {
             if (exception == null) mRetrieveFinishedListener.onResponse();
             else mRetrieveFinishedListener.onError(exception);
         }
     }
 
-    public void setRetrieveFinishedListener(EmptyLifecycleAwareResponse response) {
+    public void setRetrieveFinishedListener(EmptyResponse response) {
         this.mRetrieveFinishedListener = response;
     }
 

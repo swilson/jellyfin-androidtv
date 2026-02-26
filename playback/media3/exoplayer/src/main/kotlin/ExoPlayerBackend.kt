@@ -5,6 +5,7 @@ import android.content.Context
 import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.core.content.getSystemService
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -14,7 +15,6 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -48,23 +48,42 @@ class ExoPlayerBackend(
 	companion object {
 		const val TS_SEARCH_BYTES_LM = TsExtractor.TS_PACKET_SIZE * 1800
 		const val TS_SEARCH_BYTES_HM = TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES
+		const val MEDIA_ITEM_COUNT_MAX = 10
 	}
 
 	private var currentStream: PlayableMediaStream? = null
 	private var subtitleView: SubtitleView? = null
 	private var audioPipeline = ExoPlayerAudioPipeline()
-
 	private val exoPlayer by lazy {
+		val dataSourceFactory = DefaultDataSource.Factory(
+			context,
+			exoPlayerOptions.baseDataSourceFactory,
+		)
+		val extractorsFactory = DefaultExtractorsFactory().apply {
+			val isLowRamDevice = context.getSystemService<ActivityManager>()?.isLowRamDevice == true
+			setTsExtractorTimestampSearchBytes(
+				when (isLowRamDevice) {
+					true -> TS_SEARCH_BYTES_LM
+					false -> TS_SEARCH_BYTES_HM
+				}
+			)
+			setConstantBitrateSeekingEnabled(true)
+			setConstantBitrateSeekingAlwaysEnabled(true)
+		}
+
+		val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
+		val renderersFactory = DefaultRenderersFactory(context).apply {
+			setEnableDecoderFallback(true)
+			setExtensionRendererMode(
+				when (exoPlayerOptions.preferFfmpeg) {
+					true -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+					false -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+				}
+			)
+		}
+
 		ExoPlayer.Builder(context)
-			.setRenderersFactory(DefaultRenderersFactory(context).apply {
-				setEnableDecoderFallback(true)
-				setExtensionRendererMode(
-					when (exoPlayerOptions.preferFfmpeg) {
-						true -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
-						false -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
-					}
-				)
-			})
+			.setRenderersFactory(renderersFactory)
 			.setTrackSelector(DefaultTrackSelector(context).apply {
 				setParameters(buildUponParameters().apply {
 					setAudioOffloadPreferences(
@@ -72,40 +91,17 @@ class ExoPlayerBackend(
 							setAudioOffloadMode(TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED)
 						}.build()
 					)
+					setAllowInvalidateSelectionsOnRendererCapabilitiesChange(true)
 				})
 			})
-			.setMediaSourceFactory(DefaultMediaSourceFactory(
-				DefaultDataSource.Factory(
-					context,
-					DefaultHttpDataSource.Factory().apply {
-						exoPlayerOptions.httpConnectTimeout
-							?.inWholeMilliseconds
-							?.toInt()
-							?.let(::setConnectTimeoutMs)
-
-						exoPlayerOptions.httpReadTimeout
-							?.inWholeMilliseconds
-							?.toInt()
-							?.let(::setReadTimeoutMs)
-					}
-				),
-				DefaultExtractorsFactory().apply {
-					val isLowRamDevice = context.getSystemService<ActivityManager>()?.isLowRamDevice == true
-					setTsExtractorTimestampSearchBytes(
-						when (isLowRamDevice) {
-							true -> TS_SEARCH_BYTES_LM
-							false -> TS_SEARCH_BYTES_HM
-						}
-					)
-					setConstantBitrateSeekingEnabled(true)
-					setConstantBitrateSeekingAlwaysEnabled(true)
-				}
-			))
+			.setMediaSourceFactory(mediaSourceFactory)
+			.setAudioAttributes(AudioAttributes.Builder().apply {
+				setUsage(C.USAGE_MEDIA)
+			}.build(), true)
 			.setPauseAtEndOfMediaItems(true)
 			.build()
 			.also { player ->
 				player.addListener(PlayerListener())
-				audioPipeline.setAudioSessionId(player.audioSessionId)
 
 				if (exoPlayerOptions.enableDebugLogging) {
 					player.addAnalyticsListener(EventLogger())
@@ -128,7 +124,9 @@ class ExoPlayerBackend(
 		}
 
 		override fun onVideoSizeChanged(size: VideoSize) {
-			listener?.onVideoSizeChange(size.width, size.height)
+			if (size != VideoSize.UNKNOWN) {
+				listener?.onVideoSizeChange(size.width, size.height)
+			}
 		}
 
 		override fun onCues(cueGroup: CueGroup) {
@@ -165,7 +163,10 @@ class ExoPlayerBackend(
 
 	override fun setSubtitleView(surfaceView: PlayerSubtitleView?) {
 		if (surfaceView != null) {
-			if (subtitleView == null) subtitleView = SubtitleView(surfaceView.context)
+			if (subtitleView == null) {
+				subtitleView = SubtitleView(surfaceView.context)
+			}
+
 			surfaceView.addView(subtitleView)
 		} else {
 			(subtitleView?.parent as? ViewGroup)?.removeView(subtitleView)
@@ -181,11 +182,13 @@ class ExoPlayerBackend(
 			setUri(stream.url)
 		}.build()
 
-		// Remove any old preloaded items (skips the first which is the playing item)
-		while (exoPlayer.mediaItemCount > 1) exoPlayer.removeMediaItem(0)
-		// Add new item
+		// Remove any excessive items from the start
+		while (exoPlayer.mediaItemCount > MEDIA_ITEM_COUNT_MAX - 1) exoPlayer.removeMediaItem(0)
+
+		// Add new item to the end of the media item list
 		exoPlayer.addMediaItem(mediaItem)
 
+		// Instruct exoplayer to prepare
 		exoPlayer.prepare()
 	}
 
@@ -195,16 +198,27 @@ class ExoPlayerBackend(
 
 		currentStream = stream
 
-		var streamIsPrepared = false
-		repeat(exoPlayer.mediaItemCount) { index ->
-			streamIsPrepared =
-				streamIsPrepared || exoPlayer.getMediaItemAt(index).mediaId == stream.hashCode()
-					.toString()
+		var preparedItemIndex = (0 until exoPlayer.mediaItemCount).firstOrNull { index ->
+			exoPlayer.getMediaItemAt(index).mediaId == stream.hashCode().toString()
 		}
 
-		if (!streamIsPrepared) prepareItem(item)
+		// Prepare the item now if it doesn't exist yet
+		if (preparedItemIndex == null) {
+			prepareItem(item)
+			preparedItemIndex = exoPlayer.mediaItemCount - 1
+		}
 
-		exoPlayer.seekToNextMediaItem()
+		Timber.i("Playing ${item.mediaStream?.url}")
+
+		// Seek to prepared media item
+		when (preparedItemIndex) {
+			exoPlayer.currentMediaItemIndex - 1 -> exoPlayer.seekToPreviousMediaItem()
+			exoPlayer.currentMediaItemIndex + 1 -> exoPlayer.seekToNextMediaItem()
+			exoPlayer.currentMediaItemIndex -> Unit
+			else -> exoPlayer.seekTo(preparedItemIndex, 0)
+		}
+
+		// Enjoy!
 		exoPlayer.play()
 	}
 
@@ -224,11 +238,15 @@ class ExoPlayerBackend(
 	}
 
 	override fun seekTo(position: Duration) {
-		if (!exoPlayer.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
+		if (!exoPlayer.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) || !exoPlayer.isCurrentMediaItemSeekable) {
 			Timber.w("Trying to seek but ExoPlayer doesn't support it for the current item")
 		}
 
 		exoPlayer.seekTo(position.inWholeMilliseconds)
+	}
+
+	override fun setScrubbing(scrubbing: Boolean) {
+		exoPlayer.isScrubbingModeEnabled = scrubbing
 	}
 
 	override fun setSpeed(speed: Float) {

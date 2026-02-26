@@ -31,7 +31,6 @@ import org.jellyfin.androidtv.R;
 import org.jellyfin.androidtv.preference.UserPreferences;
 import org.jellyfin.androidtv.preference.constant.ClockBehavior;
 import org.jellyfin.androidtv.ui.playback.PlaybackController;
-import org.jellyfin.androidtv.ui.playback.PlaybackManager;
 import org.jellyfin.androidtv.ui.playback.overlay.action.AndroidAction;
 import org.jellyfin.androidtv.ui.playback.overlay.action.ChannelBarChannelAction;
 import org.jellyfin.androidtv.ui.playback.overlay.action.ChapterAction;
@@ -126,6 +125,13 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
     protected void onDetachedFromHost() {
         mHandler.removeCallbacks(mRefreshEndTime);
         mHandler.removeCallbacks(mRefreshViewVisibility);
+
+        closedCaptionsAction.removePopup();
+        playbackSpeedAction.dismissPopup();
+        selectAudioAction.dismissPopup();
+        selectQualityAction.dismissPopup();
+        zoomAction.dismissPopup();
+
         super.onDetachedFromHost();
     }
 
@@ -186,6 +192,7 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
                 super.onBindRowViewHolder(vh, item);
                 vh.setOnKeyListener(CustomPlaybackTransportControlGlue.this);
             }
+
             @Override
             protected void onUnbindRowViewHolder(RowPresenter.ViewHolder vh) {
                 super.onUnbindRowViewHolder(vh);
@@ -202,7 +209,7 @@ public class CustomPlaybackTransportControlGlue extends PlaybackTransportControl
         fastForwardAction = new FastForwardAction(context);
         skipPreviousAction = new SkipPreviousAction(context);
         skipNextAction = new SkipNextAction(context);
-        selectAudioAction = new SelectAudioAction(context, this, KoinJavaComponent.get(PlaybackManager.class));
+        selectAudioAction = new SelectAudioAction(context, this);
         selectAudioAction.setLabels(new String[]{context.getString(R.string.lbl_audio_track)});
         closedCaptionsAction = new ClosedCaptionsAction(context, this);
         closedCaptionsAction.setLabels(new String[]{context.getString(R.string.lbl_subtitle_track)});

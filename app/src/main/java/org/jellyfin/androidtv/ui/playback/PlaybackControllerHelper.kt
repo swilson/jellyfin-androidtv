@@ -7,6 +7,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jellyfin.androidtv.ui.playback.segment.MediaSegmentAction
 import org.jellyfin.androidtv.ui.playback.segment.MediaSegmentRepository
 import org.jellyfin.androidtv.util.sdk.end
@@ -29,10 +30,24 @@ fun PlaybackController.getLiveTvChannel(
 
 	fragment.lifecycleScope.launch {
 		runCatching {
-			api.liveTvApi.getChannel(id).content
+			withContext(Dispatchers.IO) {
+				api.liveTvApi.getChannel(id).content
+			}
 		}.onSuccess { channel ->
 			callback(channel)
 		}
+	}
+}
+
+@OptIn(UnstableApi::class)
+fun PlaybackController.disableDefaultSubtitles() {
+	Timber.i("Disabling non-baked subtitles")
+
+	with(mVideoManager.mExoPlayer.trackSelector!!) {
+		parameters = parameters.buildUpon()
+			.clearOverridesOfType(C.TRACK_TYPE_TEXT)
+			.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+			.build()
 	}
 }
 
@@ -55,14 +70,7 @@ fun PlaybackController.setSubtitleIndex(index: Int, force: Boolean = false) {
 			burningSubs = false
 			play(mCurrentPosition, -1)
 		} else {
-			Timber.i("Disabling subtitles")
-
-			with(mVideoManager.mExoPlayer.trackSelector!!) {
-				parameters = parameters.buildUpon()
-					.clearOverridesOfType(C.TRACK_TYPE_TEXT)
-					.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-					.build()
-			}
+			disableDefaultSubtitles()
 		}
 	} else if (burningSubs) {
 		Timber.i("Restarting playback to disable subtitle baking")
@@ -70,12 +78,12 @@ fun PlaybackController.setSubtitleIndex(index: Int, force: Boolean = false) {
 		// If we're currently burning subs and want to switch streams we need some special behavior
 		// to stop the current baked subs. We can just stop & start with the new subtitle index for that
 		stop()
-		burningSubs = true
+		burningSubs = false
 		mCurrentOptions.subtitleStreamIndex = index
 		play(mCurrentPosition, index)
 	} else {
 		val mediaSource = currentMediaSource
-		val stream = mediaSource.mediaStreams?.first { it.type == MediaStreamType.SUBTITLE && it.index == index }
+		val stream = mediaSource.mediaStreams?.firstOrNull { it.type == MediaStreamType.SUBTITLE && it.index == index }
 		if (stream == null) {
 			Timber.w("Failed to find correct media stream")
 			return setSubtitleIndex(-1)
@@ -108,7 +116,7 @@ fun PlaybackController.setSubtitleIndex(index: Int, force: Boolean = false) {
 						.filter { it.type == MediaStreamType.SUBTITLE }
 						.filter { it.deliveryMethod == SubtitleDeliveryMethod.EMBED || it.deliveryMethod == SubtitleDeliveryMethod.HLS }
 						.indexOf(stream)
-						.takeIf { index -> index != -1 }
+						.takeIf { it != -1 }
 
 					if (localIndex == null) {
 						Timber.w("Failed to find local subtitle index")
@@ -151,6 +159,7 @@ fun PlaybackController.applyMediaSegments(
 ) {
 	val mediaSegmentRepository by fragment.inject<MediaSegmentRepository>()
 
+	fragment?.clearSkipOverlay()
 	fragment.lifecycleScope.launch {
 		val mediaSegments = runCatching {
 			mediaSegmentRepository.getSegmentsForItem(item)

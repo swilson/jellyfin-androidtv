@@ -1,7 +1,6 @@
 package org.jellyfin.androidtv.di
 
 import org.jellyfin.androidtv.auth.AccountManagerMigration
-import org.jellyfin.androidtv.auth.apiclient.ApiBinder
 import org.jellyfin.androidtv.auth.repository.AuthenticationRepository
 import org.jellyfin.androidtv.auth.repository.AuthenticationRepositoryImpl
 import org.jellyfin.androidtv.auth.repository.ServerRepository
@@ -25,8 +24,11 @@ val authModule = module {
 	single<ServerRepository> { ServerRepositoryImpl(get(), get()) }
 	single<ServerUserRepository> { ServerUserRepositoryImpl(get(), get()) }
 	single<SessionRepository> {
-		SessionRepositoryImpl(get(), get(), get(), get(), get(), get(defaultDeviceInfo), get(), get(), get())
+		SessionRepositoryImpl(get(), get(), get(), get(), get(defaultDeviceInfo), get(), get(), get())
 	}
 
-	single { ApiBinder(get(), get()) }
+	factory {
+		val serverRepository = get<ServerRepository>()
+		serverRepository.currentServer.value?.serverVersion ?: ServerRepository.minimumServerVersion
+	}
 }
